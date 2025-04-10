@@ -1,0 +1,576 @@
+---
+title: "Granger causality test - REDO on the version from March 2025"
+output: html_document
+date: "2024-03-12"
+---
+
+
+```{r, set up a directory to save all output files to, echo=FALSE, results=FALSE}
+rm(list = ls())
+#dir = "/users/sana/Documents/CANMOD/7-RD-grangertests/7-freyjaxgranger"
+dir = "/Users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/"
+```
+
+
+```{r, load data and add freyja results, echo=FALSE, results=FALSE}
+## load all data
+everything = read.delim("/users/sana/Documents/CANMOD/0-reference_files_redo_march2025/Analysis_Report-Slim-2025-03-06_merged_w_nsegs_w_cases_w_qpcr_freyjacalculated_colnames_edited_qc_filtered.tsv")
+```
+
+
+```{r, remove rows with lineage split, echo=FALSE, results=FALSE}
+# freyja_vars = c("unfiltered_shannon",
+#                 "filtered_shannon",
+#                 "unfiltered_richness",
+#                 "filtered_richness")
+# 
+# ## lineage split labels co-occur for richness and shannon so I will only check for 1
+# everything = everything[-which(everything$filtered_richness == "lineage split"), ]
+
+```
+
+
+*(Code from script RD-50 (verified dynamic version of Granger Causality test))*
+
+```{r, determine variants of interest and clean, echo=FALSE, results=FALSE}
+
+# everything$weekly_rate = everything$Pourcentage.de.positivité
+# everything$daily_rate = (everything$Tests.positifs/(everything$Tests.positifs + everything$Tests.negatifs))*100
+# everything$all_tests = everything$Tests.negatifs + everything$Tests.positifs
+# everything$negative_tests = everything$Tests.negatifs
+# everything$daily_count = everything$Tests.positifs
+# everything$weekly_count = everything$week_total_positive_count
+
+predictors = c("nseg_relaxed", "vcopy_per_person", "vcopy_per_100k")
+outcomes = c("daily_count", "daily_rate", "tests_taken")
+
+
+```
+
+
+
+```{r, granger causality, root.dir = TRUE, echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+### granger causality test
+library(lmtest)
+library(tseries)
+library(ggplot2)
+max_order = 28
+
+for(outcome in outcomes){ #outcome loop starts here
+  
+print(outcome)
+vars = c(predictors, outcome)  
+
+## remove any NAs in these variables (adf test cares about this)
+for(var in vars){
+  everything[, var] = as.numeric(everything[, var])
+  everything = everything[which(!is.na(everything[, var])), ]
+}
+
+
+
+#creates sites df
+sites_df = data.frame(city_id = vector(),
+                      site_number = vector())
+
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 5)
+sites_df[nrow(sites_df) + 1, ] = c("GTN", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 2)
+sites_df[nrow(sites_df) + 1, ] = c("Riki", 1)
+sites_df[nrow(sites_df) + 1, ] = c("Sept", 1)
+
+######################################################## section 1: only diffrentiate non-stationary series #########################################
+#setwd("/users/sana/Documents/CANMOD/7-RD-grangertests/6-qPCR/test/")
+for(s in 1:nrow(sites_df)){
+  ## get city data
+  city_id = sites_df$city_id[s]
+  site_number = sites_df$site_number[s]
+  
+  city_data = everything[which(everything$city_id == city_id), ]
+  city_data = city_data[which(city_data$site_number == site_number), ]
+  city_data$date = as.Date(city_data$date)
+  city_data = city_data[order(city_data$date), ]
+  
+  # ### convert character columns to numeric
+  # city_data$tajimasd = as.numeric(city_data$tajimasd)
+  # #city_data$filtered_shannon = as.numeric(city_data$filtered_shannon)
+  # 
+  # ## remove duplicated dates 
+  # if(length(which(duplicated(city_data$date))) > 0){
+  #   city_data = city_data[-which(duplicated(city_data$date)), ]
+  # }
+  # 
+  # ##remove rows that tajima'sd and. shannon are NA
+  # city_data = city_data[which(!is.na(city_data$tajimasd)), ]
+  # #city_data = city_data[which(!is.na(city_data$filtered_shannon)), ]
+  
+  
+  ###### check for stationarity in the time series
+
+  
+  stationarity_df = data.frame(matrix(NA, nrow = nrow(city_data), ncol = (length(vars) + 3)))
+  colnames(stationarity_df) = c("city_id", "site_number", "date", vars)
+  
+  stationarity_df$date = city_data$date
+  stationarity_df$city_id = city_id
+  stationarity_df$site_number = site_number
+  
+  for(var in vars){
+    t = adf.test(city_data[, var])
+    if(t$p.value < 0.05){
+      stationarity_df[, var] = city_data[, var]
+      next
+    }
+    
+    ## take first gradient
+    grad = diff(city_data[, var])
+    t = adf.test(grad)
+    if(t$p.value < 0.05){
+      stationarity_df[(2:nrow(stationarity_df)), var] = grad
+      next
+    }
+    
+    if(t$p.value >= 0.05){
+      print(s)
+      print("non stat")
+    }
+    # ## take second gradient
+    # grad2 = diff(grad)
+    # t = adf.test(grad2)
+    # if(t$p.value < 0.05){
+    #   stationarity_df[(3:nrow(stationarity_df)), var] = grad2
+    #   next
+    # }
+    
+  }
+  
+  write.table(stationarity_df, 
+              file = paste0(dir,"/",city_id, "_", site_number, "_stationary_df.tsv"),
+              sep = "\t",
+              row.names = FALSE)
+  print("you can ignore the warnings!")
+}
+
+
+
+## remove postest from vars to avoid errors from granger:
+vars = vars[-which(vars == outcome)]
+
+
+## dataframe to store all the granger test results
+all_sites_granger_df = data.frame(parameter = vector(),
+                                  order = vector(),
+                                  forward_causality = vector(),
+                                  forward_pvalue = vector(),
+                                  reverse_causality = vector(),
+                                  reverse_pvalue = vector(),
+                                  city_id = vector(),
+                                  site_number = vector(),
+                                  site_identifier = vector())
+
+
+
+
+for(s in 1:nrow(sites_df)){
+  print(s)
+  city_id = sites_df$city_id[s]
+  site_number = sites_df$site_number[s]
+  
+  city_data = read.delim(paste0(dir,"/", city_id, "_", site_number, "_stationary_df.tsv"))
+  city_data = city_data[-(1:2), ]
+  
+  for(i in 1:max_order){
+    
+    for(var in vars){ # var loop ends here
+      
+    
+    #forward causality: 
+    fmla_forward = as.formula(paste0(outcome, "~", var))  
+    gtest_forward = grangertest(fmla_forward, order = i, data = city_data)
+    
+    #backward causality:
+    fmla_backward = as.formula(paste0(var, "~", outcome))
+    gtest_backward = grangertest(fmla_backward, order = i, data = city_data)
+
+    ## add the values to the global dataframe
+    all_sites_granger_df[nrow(all_sites_granger_df) + 1,] = data.frame(paste0(outcome, " vs ", var),
+                                                              i,
+                                                              paste0("y=",outcome, " x=", var),
+                                                              gtest_forward$`Pr(>F)`[2],
+                                                              paste0("y=", var, " x=",outcome),
+                                                              gtest_backward$`Pr(>F)`[2],
+                                                              city_id,
+                                                              site_number,
+                                                              paste0(city_id, "_0", site_number))
+    } # var loop ends here
+    
+      }
+ 
+  
+} ## loop ends here
+
+write.table(all_sites_granger_df,
+            file = paste0(dir,"/all_sites_granger_df_outcome_", outcome, ".tsv"),
+            sep = "\t",
+            row.names = FALSE)
+
+
+###fill out the counts
+counts_long_df = data.frame(order = vector(),
+                            count = vector(),
+                            arrangement = vector())
+
+forwards = unique(all_sites_granger_df$forward_causality)
+reverses = unique(all_sites_granger_df$reverse_causality)
+
+
+for(o in 1:max_order){
+  for(c in forwards){
+    sub = all_sites_granger_df[which(all_sites_granger_df$forward_causality == c), ]
+    sub = sub[which(sub$order == o), ]
+    counts_long_df[nrow(counts_long_df) + 1, ] = data.frame(order = o,
+                                                            count = length(which(sub$forward_pvalue < 0.05)),
+                                                            arrangement = c)
+  }
+  for(c in reverses){
+    sub = all_sites_granger_df[which(all_sites_granger_df$reverse_causality == c), ]
+    sub = sub[which(sub$order == o), ]
+    counts_long_df[nrow(counts_long_df) + 1, ] = data.frame(order = o,
+                                                            count = length(which(sub$reverse_pvalue < 0.05)),
+                                                            arrangement = c)
+  }
+  
+  
+}
+
+write.table(counts_long_df, 
+            file = paste0(dir,"/counts_long_df_outcome_", outcome, ".tsv"),
+            sep = "\t",
+            row.names = FALSE)
+
+#counts_long_df$order = -1 * counts_long_df$order
+
+p = ggplot(data = counts_long_df) + 
+  geom_tile(aes(x = order, y = arrangement, fill = count, group = arrangement), color = "black", linewidth = 0.95) +
+  scale_fill_gradient2(low = "white",
+                       high = "#752F45",
+                       limits = c(0,10)) +
+  geom_text(aes(x=order, y=arrangement, label = count)) +
+  theme_bw() 
+
+p
+ggsave(p, file = paste0(dir, "/granger_causality_outcome_",outcome, ".pdf"))
+} #outcome loop ends here
+
+
+```
+
+### plotting and permutations
+
+create summary of permutations:
+```{r, analyze permutations}
+rm(list = ls())
+max_order = 28
+
+sites_df = data.frame(city_id = vector(),
+                      site_number = vector())
+
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 5)
+sites_df[nrow(sites_df) + 1, ] = c("GTN", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 2)
+sites_df[nrow(sites_df) + 1, ] = c("Riki", 1)
+sites_df[nrow(sites_df) + 1, ] = c("Sept", 1)
+sites_df$site_identifier = paste0(sites_df$city_id, "_", sites_df$site_number)
+
+predictors = c("nseg_relaxed", "vcopy_per_100k")
+outcomes = c("daily_count", "daily_rate", "tests_taken")
+
+## write a function that creates the summary dataframe for a given outcome
+## load permutations files
+
+get_summary = function(outcome){
+  all = data.frame()
+  for(s in 1:nrow(sites_df)){
+    all = rbind(all,
+                read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/3-granger_permutations/", sites_df$site_identifier[s], "_outcome_", outcome, "_pred_vcopy_per_100k.tsv")),
+                read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/3-granger_permutations/", sites_df$site_identifier[s], "_outcome_", outcome, "_pred_nseg_relaxed.tsv"))
+                )
+  }
+  
+  summary = data.frame(
+  order = vector(),
+  sig_count = vector(),
+  total_count = vector(),
+  sig_proportion = vector(),
+  Count = vector(),
+  causality = vector(),
+  perm = vector())
+  
+  for(l in 1:max_order){
+    
+    for(pred in predictors){
+        perms = all[which(all$order == l), ]
+        perms = perms[which(perms$causality == paste0("y=",outcome, " x=", pred)), ]
+        sigs = perms[perms$pvalue < 0.05, ]
+
+  
+        summary = rbind(summary,
+                  data.frame(
+                            order = l,
+                            sig_count = nrow(sigs),
+                            total_count = nrow(perms),
+                            sig_proportion = nrow(sigs)/nrow(perms),
+                            Count = (nrow(sigs)/nrow(perms))*10,
+                            causality = paste0("y=",outcome, " x=", pred),
+                            perm = "permutated data")
+                  )
+    }
+}
+  ## get real data and append
+  real_data = read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/counts_long_df_outcome_", outcome, ".tsv"))
+  ## only keep forward causality rows
+  real_data = real_data[which(str_detect(real_data$arrangement, paste0("y=", outcome))), ]
+  
+  summary = rbind(summary,
+                  data.frame(
+                            order = real_data$order,
+                            sig_count = NA,
+                            total_count = NA,
+                            sig_proportion = NA,
+                            Count = real_data$count,
+                            causality = real_data$arrangement,
+                            perm = real_data$arrangement)
+                  
+                  )
+  
+  return(summary)
+}
+
+```
+
+
+Plot for nseg and vcopy and ggarrange them:
+
+For daily count:
+```{r, plot}
+library(ggplot2)
+library(stringr)
+library(ggpubr)
+
+############ Plot for daily count
+
+outcome = "daily_count"
+pred1 = "nseg_relaxed"
+summary = get_summary(outcome)
+
+### fix the inconsistency between vcopy and actual vcopy column names:
+#summary$causality = str_replace_all(summary$causality, "actual_vcopy", "vcopy")
+#summary$perm = str_replace_all(summary$perm, "actual_vcopy", "vcopy")
+
+
+p1 = ggplot(data = summary[summary$causality == paste0("y=", outcome, " x=", pred1), ]) +
+    geom_tile(aes(x = order, y = factor(perm, levels = rev(c(paste0("y=", outcome, " x=", pred1), "permutated data")), labels = rev(c("# of SNPs predicting daily case count", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("a. The number of SNPs")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))
+
+
+pred2 = "vcopy_per_100k"
+p2 = ggplot(data = summary[summary$causality == paste0("y=", outcome, " x=", pred2), ]) +
+    geom_tile(aes(x = order, y = factor(perm, levels = rev(c(paste0("y=", outcome, " x=", pred2), "permutated data")), labels = rev(c("viral copy number predicting daily case count", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("b. Viral copy number")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))
+  
+
+daily_count_plot = ggarrange(p1, p2, nrow = 2, ncol =1)
+ggsave(daily_count_plot,
+       file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger causality_daily_count.pdf",
+       device = "pdf",
+       heigh = 6,
+       width = 15)
+
+```
+
+
+For daily rate:
+
+```{r, plot}
+############ Plot for daily rate
+
+outcome = "daily_rate"
+pred1 = "nseg_relaxed"
+summary = get_summary(outcome)
+
+### fix the inconsistency between vcopy and actual vcopy column names:
+#summary$causality = str_replace_all(summary$causality, "actual_vcopy", "vcopy")
+#summary$perm = str_replace_all(summary$perm, "actual_vcopy", "vcopy")
+
+
+p1 = ggplot(data = summary[summary$causality == paste0("y=", outcome, " x=", pred1), ]) +
+    geom_tile(aes(x = order, y = factor(perm, levels = rev(c(paste0("y=", outcome, " x=", pred1), "permutated data")), labels = rev(c("# of SNPs predicting daily positivity rate", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("a. The number of SNPs")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))
+
+
+pred2 = "vcopy_per_100k"
+p2 = ggplot(data = summary[summary$causality == paste0("y=", outcome, " x=", pred2), ]) +
+    geom_tile(aes(x = order, y = factor(perm, levels = rev(c(paste0("y=", outcome, " x=", pred2), "permutated data")), labels = rev(c("viral copy number predicting daily positivity", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("b. Viral copy number")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))
+  
+
+daily_rate_plot = ggarrange(p1, p2, nrow = 2, ncol =1)
+ggsave(daily_rate_plot,
+       file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger causality_daily_rate.pdf",
+       device = "pdf",
+       heigh = 6,
+       width = 15)
+
+```
+
+
+# Create grid and plot:
+
+
+For daily count:
+```{r, plot grid}
+#### FIX THIS
+rm(list = ls())
+
+outcome = "daily_count"
+
+all_sites_granger_df = read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/all_sites_granger_df_outcome_", outcome, ".tsv"))
+all_sites_granger_df$forward_sig = "not significant"
+all_sites_granger_df$forward_sig[which(all_sites_granger_df$forward_pvalue < 0.05)] = "significant"
+all_sites_granger_df$ygrid_forward = paste0(all_sites_granger_df$site_identifier, "_", all_sites_granger_df$forward_causality)
+
+all_sites_granger_df$forward_causality = str_replace_all(all_sites_granger_df$forward_causality, "actual_vcopy", "vcopy")
+
+p1 = ggplot(all_sites_granger_df[which(all_sites_granger_df$forward_causality == paste0("y=",outcome, " x=nseg_relaxed")), ]) + 
+  geom_tile(aes(x=order, y=factor(site_identifier,
+                                  levels = rev(c("MTL_01", "MTL_02", "LVL_01", "LVL_02", "LVL_05","GTN_01", "Sept_01", "Riki_01", "QC_01","QC_02"))), fill = forward_sig), color = "black", linewidth = 0.95)+
+  facet_grid(factor(city_id, levels = c("MTL", "LVL", "GTN", "Sept", "QC", "Riki"))~., scales="free_y")+
+  theme_bw()+theme(legend.position = 'right',
+                   axis.text.x = element_text(size = 10),
+                   axis.text.y = element_text(size = 10)) +
+  scale_fill_manual(values = c("white", "darkred"))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))+
+  ylab("Site identifier")+
+  labs(fill = "Significance")+
+  ggtitle(str_wrap("Granger test significance per site for daily case counts predicted by the number of segregating sites", width = 60))
+  
+ggsave(p1, file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger_causality_grid_daily_count_nseg.pdf", width = 10, height = 6)
+
+p2 = ggplot(all_sites_granger_df[which(all_sites_granger_df$forward_causality == paste0("y=",outcome, " x=vcopy_per_100k")), ]) + 
+  geom_tile(aes(x=order, y=factor(site_identifier,
+                                  levels = rev(c("MTL_01", "MTL_02", "LVL_01", "LVL_02", "LVL_05","GTN_01", "Sept_01", "Riki_01", "QC_01","QC_02"))), fill = forward_sig), color = "black", linewidth = 0.95)+
+  facet_grid(factor(city_id, levels = c("MTL", "LVL", "GTN", "Sept", "QC", "Riki"))~., scales="free_y")+
+  theme_bw()+theme(legend.position = 'right',
+                   axis.text.x = element_text(size = 10),
+                   axis.text.y = element_text(size = 10)) +
+  scale_fill_manual(values = c("white", "darkred"))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))+
+  ylab("Site identifier")+
+  labs(fill = "Significance")+
+  ggtitle(str_wrap("Granger test significance per site for daily case counts predicted by viral copy number", width = 60))
+  
+ggsave(p2, file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger_causality_grid_daily_count_vcopy.pdf", width = 10, height = 6)
+
+
+
+```
+
+For daily rate:
+```{r, plot grid}
+#### FIX THIS
+rm(list = ls())
+
+outcome = "daily_rate"
+
+all_sites_granger_df = read.delim(paste0("/users/sana/Documents/CANMOD/16-updated_results_for_manuscript/MS-01-granger_nseg/all_sites_granger_df_outcome_", outcome, ".tsv"))
+all_sites_granger_df$forward_sig = "not significant"
+all_sites_granger_df$forward_sig[which(all_sites_granger_df$forward_pvalue < 0.05)] = "significant"
+all_sites_granger_df$ygrid_forward = paste0(all_sites_granger_df$site_identifier, "_", all_sites_granger_df$forward_causality)
+
+all_sites_granger_df$forward_causality = str_replace_all(all_sites_granger_df$forward_causality, "actual_vcopy", "vcopy")
+
+p1 = ggplot(all_sites_granger_df[which(all_sites_granger_df$forward_causality == paste0("y=",outcome, " x=nseg_relaxed")), ]) + 
+  geom_tile(aes(x=order, y=factor(site_identifier,
+                                  levels = rev(c("MTL_01", "MTL_02", "LVL_01", "LVL_02", "LVL_05","GTN_01", "Sept_01", "Riki_01", "QC_01","QC_02"))), fill = forward_sig), color = "black", linewidth = 0.95)+
+  facet_grid(factor(city_id, levels = c("MTL", "LVL", "GTN", "Sept", "QC", "Riki"))~., scales="free_y")+
+  theme_bw()+theme(legend.position = 'right',
+                   axis.text.x = element_text(size = 10),
+                   axis.text.y = element_text(size = 10)) +
+  scale_fill_manual(values = c("white", "darkred"))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))+
+  ylab("Site identifier")+
+  labs(fill = "Significance")+
+  ggtitle(str_wrap("Granger test significance per site for daily positivity rate predicted by the number of segregating sites", width = 60))
+  
+ggsave(p1, file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger_causality_grid_daily_rate_nseg.pdf", width = 10, height = 6)
+
+p2 = ggplot(all_sites_granger_df[which(all_sites_granger_df$forward_causality == paste0("y=",outcome, " x=vcopy")), ]) + 
+  geom_tile(aes(x=order, y=factor(site_identifier,
+                                  levels = rev(c("MTL_01", "MTL_02", "LVL_01", "LVL_02", "LVL_05","GTN_01", "Sept_01", "Riki_01", "QC_01","QC_02"))), fill = forward_sig), color = "black", linewidth = 0.95)+
+  facet_grid(factor(city_id, levels = c("MTL", "LVL", "GTN", "Sept", "QC", "Riki"))~., scales="free_y")+
+  theme_bw()+theme(legend.position = 'right',
+                   axis.text.x = element_text(size = 10),
+                   axis.text.y = element_text(size = 10)) +
+  scale_fill_manual(values = c("white", "darkred"))+
+  scale_x_continuous(limits = c(0,29), breaks = c(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28))+
+  ylab("Site identifier")+
+  labs(fill = "Significance")+
+  ggtitle(str_wrap("Granger test significance per site for daily positivity rate predicted by viral copy number", width = 60))
+  
+ggsave(p2, file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/1-grangertest/granger_causality_grid_daily_rate_vcopy.pdf", width = 10, height = 6)
+
+
+
+```
+
+
+
+
+
+

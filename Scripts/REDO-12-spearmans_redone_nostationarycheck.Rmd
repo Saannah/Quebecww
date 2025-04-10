@@ -1,0 +1,330 @@
+---
+title: "spearmans correlation redone for March 2025 version"
+output: html_document
+date: "2024-05-16"
+---
+
+version without testing for stationarity:
+
+```{r, spearman calculation}
+#### spearman's correlation on slimhq
+rm(list = ls())
+#set directory
+dir = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/2-spearmans/"
+
+
+lag_duration = 28
+spearman_results = data.frame()
+everything = read.delim("/users/sana/Documents/CANMOD/0-reference_files_redo_march2025/Analysis_Report-Slim-2025-03-06_merged_w_nsegs_w_cases_w_qpcr_freyjacalculated_colnames_edited_qc_filtered.tsv")
+
+
+predictors = c("nseg_relaxed", "vcopy_per_person", "vcopy_per_100k")
+outcomes = c("daily_count", "daily_rate", "tests_taken")
+
+
+
+sites_df = data.frame(city_id = vector(),
+                      site_number = vector())
+
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 5)
+sites_df[nrow(sites_df) + 1, ] = c("GTN", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 2)
+sites_df[nrow(sites_df) + 1, ] = c("Riki", 1)
+sites_df[nrow(sites_df) + 1, ] = c("Sept", 1)
+
+
+
+
+#create a funcion thar calculates cross correlation for a k shift in both directions of two vectors:
+cross_correlation = function(k, vec1, vec2){
+  #shift vec1 forward:
+  if(k >= 0){
+    vec1_shifted = vec1[1:(length(vec1) - k)]
+    vec2_shifted = vec2[(k + 1):length(vec2)]
+    #v1_forward_cc = (sum(vec1_shifted * vec2_shifted))/sqrt(sum(vec1 * vec1) * sum(vec2 * vec2))
+    test_forward = cor.test(vec1_shifted, vec2_shifted, method = "spearman", exact = FALSE)
+    return(data.frame(direction = "v1_forward",
+                      lag = k,
+                      #cc = v1_forward_cc,
+                      estimate = test_forward$estimate,
+                      pvalue = test_forward$p.value))
+  }
+  
+  
+  if(k < 0){
+    lag = k
+    k = abs(k)
+    #shift vec1 backward:
+    vec1_shifted = vec1[(k + 1):length(vec1)]
+    vec2_shifted = vec2[1:(length(vec2) - k)]
+    #v1_backward_cc = sum(vec1_shifted * vec2_shifted)/sqrt(sum(vec1 * vec1) * sum(vec2 * vec2))
+    test_backward = cor.test(vec1_shifted, vec2_shifted, method = "spearman", exact = FALSE)
+    return(data.frame(direction = "v1_backward",
+                      lag = lag,
+                      #cc = v1_backward_cc,
+                      estimate = test_backward$estimate,
+                      pvalue = test_backward$p.value))
+  }
+  
+}
+
+
+
+
+for(outcome in outcomes){ #outcome loop starts here
+  ## runs for each outcome, saves and plots the result
+  
+  ## create dataframe to store this outcomes correlation results
+  all_sites_correlation_df = data.frame()
+  
+  for(s in 1:nrow(sites_df)){ ##sites loop starts here
+  
+  ## get city data from everything
+  city_id = sites_df$city_id[s]
+  site_number = sites_df$site_number[s]
+  
+  city_data = everything[which(everything$city_id == city_id), ]
+  city_data = city_data[which(city_data$site_number == site_number), ]
+  city_data$date = as.Date(city_data$date)
+  city_data = city_data[order(city_data$date), ]
+  
+    
+    for(predictor in predictors){ ### var loop starts here
+      cross_corr = as.data.frame(do.call(rbind, (lapply(-lag_duration:lag_duration, cross_correlation, 
+                                                    city_data[, predictor], city_data[, outcome]))))
+      cross_corr$city_id = city_id
+      cross_corr$site_number = site_number
+      cross_corr$comparison = paste0(predictor, " vs ", outcome)
+
+    all_sites_correlation_df = rbind(all_sites_correlation_df, cross_corr)
+      
+    } ### var loop ends here
+ 
+  
+} ## sites loop ends here
+  
+  #### aggregate and save results for the 1 outcome in this loop
+  counts_df = data.frame(lag = vector(),
+                       count = vector(),
+                       comparison = vector())
+  
+  for(predictor in predictors){
+      for(l in (-lag_duration:lag_duration)){
+         sub = all_sites_correlation_df[which(all_sites_correlation_df$comparison == paste0(predictor, " vs ", outcome)), ]
+         sub = sub[which(sub$lag == l), ]
+         sub = sub[which(sub$estimate > 0),]
+         sigs = length(which(sub$pvalue < 0.05))
+         counts_df = rbind(counts_df,
+                           data.frame(lag = l,
+                                      count = sigs,
+                                      comparison = paste0(predictor, " vs ", outcome)
+                                        ))
+  
+}
+    
+  }
+
+  
+  ## write table and plot for outcome
+  write.table(counts_df,
+              file = paste0(dir, "spearmans_outcome_", outcome, ".tsv"),
+              sep = "\t",
+              row.names = FALSE)
+  
+  p = ggplot(data = counts_df) + 
+    geom_tile(aes(x=lag, fill = count, y = comparison), color = "black", linewidth = 0.7) +
+    geom_text(aes(x = lag, y = comparison, label = count)) +
+    scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "#C33C54",
+                       limits = c(0,10)) +
+    theme_bw() + ggtitle("Lagged Spearman's correlation") + ylab("Correlation")
+  
+  ggsave(p,
+         file = paste0(dir, "spearmans_outcome_", outcome, ".pdf"),
+         device = "pdf",
+         width = 15,
+         height = 3)
+}#outcome loop ends here
+
+
+```
+
+Load permutations and plot:
+```{r, load permutations and combine}
+rm(list = ls())
+sites_df = data.frame(city_id = vector(),
+                      site_number = vector())
+lag_duration = 28
+
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("MTL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 1)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 2)
+sites_df[nrow(sites_df) + 1, ] = c("LVL", 5)
+sites_df[nrow(sites_df) + 1, ] = c("GTN", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 1)
+sites_df[nrow(sites_df) + 1, ] = c("QC", 2)
+sites_df[nrow(sites_df) + 1, ] = c("Riki", 1)
+sites_df[nrow(sites_df) + 1, ] = c("Sept", 1)
+sites_df$site_identifier = paste0(sites_df$city_id, "_", sites_df$site_number)
+
+predictors = c("nseg_relaxed", "vcopy_per_100k")
+
+## write a function that creates the summary dataframe for a given outcome
+get_summary = function(outcome){
+  all = data.frame()
+  for(s in 1:nrow(sites_df)){
+    all = rbind(all,
+                                 read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/4-spearmans_permutations/spearmans_permutations_", sites_df$site_identifier[s], "_outcome_", outcome, "_pred_nseg_relaxed.tsv")),
+                                 read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/4-spearmans_permutations/spearmans_permutations_", sites_df$site_identifier[s], "_outcome_", outcome, "_pred_vcopy_per_100k.tsv"))
+                                                    )
+  }
+  
+  summary = data.frame(
+  lag = vector(),
+  sig_count = vector(),
+  total_count = vector(),
+  sig_proportion = vector(),
+  Count = vector(),
+  test = vector(),
+  perm = vector())
+  
+  for(l in (-lag_duration:lag_duration)){
+    
+    for(pred in predictors){
+        perms = all[which(all$lag == l), ]
+        perms = perms[which(perms$comparison == paste0(pred, " vs ", outcome)), ]
+        sigs = perms[perms$estimate > 0 & perms$pvalue < 0.05, ]
+
+  
+        summary = rbind(summary,
+                  data.frame(
+                    lag = l,
+                    sig_count = nrow(sigs),
+                    total_count = nrow(perms),
+                    sig_proportion = (nrow(sigs)/nrow(perms)),
+                    Count = (nrow(sigs)/nrow(perms))*10,
+                    test = paste0(pred, " vs ", outcome),
+                    perm = "permutated data"))
+    }
+}
+  ## get real data and append
+  real_data = read.delim(paste0("/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/2-spearmans/spearmans_outcome_", outcome,".tsv"))
+  
+  summary = rbind(summary,
+                  data.frame(lag = real_data$lag,
+                             sig_count = NA,
+                             total_count = NA,
+                             sig_proportion = NA,
+                             Count = real_data$count,
+                             test = real_data$comparison,
+                             perm = real_data$comparison)
+                             
+                  
+                  )
+  
+  return(summary)
+}
+```
+
+Plot for nseg and vcopy and ggarrange them:
+```{r, plot}
+library(ggplot2)
+library(stringr)
+library(ggpubr)
+
+############ Plot for daily count
+
+outcome = "daily_count"
+pred1 = "nseg_relaxed"
+summary = get_summary(outcome)
+p1 = ggplot(data = summary[summary$test == paste0(pred1, " vs ", outcome), ]) +
+    geom_tile(aes(x = lag, y = factor(perm, levels = rev(c(paste0(pred1, " vs ", outcome), "permutated data")), labels = rev(c("# of SNPs vs daily case count", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("a. The number of SNPs")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))
+
+
+pred2 = "vcopy_per_100k"
+p2 = ggplot(data = summary[summary$test == paste0(pred2, " vs ", outcome), ]) +
+    geom_tile(aes(x = lag, y = factor(perm, levels = rev(c(paste0(pred2, " vs ", outcome), "permutated data")), labels = rev(c("viral copy number vs daily case count", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("b. Viral copy number")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))
+
+  
+
+daily_count_plot = ggarrange(p1, p2, nrow = 2, ncol =1)
+ggsave(daily_count_plot,
+       file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/2-spearmans/spearmans_correlation_daily_count.pdf",
+       device = "pdf",
+       heigh = 6,
+       width = 15)
+
+```
+
+
+
+Plot for daily rate:
+```{r, plot daily rate correlations}
+############ Plot for daily count
+
+outcome = "daily_rate"
+pred1 = "nseg_relaxed"
+summary = get_summary(outcome)
+p1 = ggplot(data = summary[summary$test == paste0(pred1, " vs ", outcome), ]) +
+    geom_tile(aes(x = lag, y = factor(perm, levels = rev(c(paste0(pred1, " vs ", outcome), "permutated data")), labels = rev(c("# of SNPs vs daily positivity rate", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("a. The number of SNPs")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))
+
+
+pred2 = "vcopy_per_100k"
+p2 = ggplot(data = summary[summary$test == paste0(pred2, " vs ", outcome), ]) +
+    geom_tile(aes(x = lag, y = factor(perm, levels = rev(c(paste0(pred2, " vs ", outcome), "permutated data")), labels = rev(c("viral copy number vs daily positivity rate", "permutated data"))), fill = Count), color = "black", size = 0.95) +
+  scale_fill_gradient2(low = "#075AFF",
+                       mid = "white",
+                       high = "darkred",
+                       limits = c(0,10),
+                       breaks = c(0,2,4,6,8,10)) +
+  ylab("Comparison") +
+  labs(fill = "Sites") + 
+  theme_bw() + ggtitle("b. Viral copy number")+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 15))
+
+  
+
+daily_rate_plot = ggarrange(p1, p2, nrow = 2, ncol =1)
+ggsave(daily_rate_plot,
+       file = "/users/sana/Documents/CANMOD/17-updated_vcf_files_2025/2-spearmans/spearmans_correlation_daily_rate.pdf",
+       device = "pdf",
+       heigh = 6,
+       width = 15)
+
+
+```
+
